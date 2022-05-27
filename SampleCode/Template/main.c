@@ -36,6 +36,10 @@ enum
 	ADC_CH_DEFAULT 	
 }ADC_CH_TypeDef;
 
+uint16_t za = 0;
+uint16_t zb = 0;
+uint16_t zc = 0;
+uint16_t zx = 0;
 
 /*_____ M A C R O S ________________________________________________________*/
 #define ENABLE_ADC_IRQ
@@ -249,20 +253,43 @@ void ADC_InitChannel(uint8_t ch)
 	#endif
 }
 
+// Fast 0-255 random number generator from http://eternityforest.com/Projects/rng.php:
+uint16_t rng(void)//void uint8_t __attribute__((always_inline)) rng(void)
+{
+    zx++;
+    za = (za^zc^zx);
+    zb = (zb+za);
+    zc = (zc+(zb>>1)^za);
+    return zc;
+}
+
+void prepare_seed(void)
+{
+    za = ADC_ReadChannel(ADC0_CH15); 
+    zb = ADC_ReadChannel(ADC0_CH15); 
+    zc = ADC_ReadChannel(ADC0_CH15); 
+    zx = ADC_ReadChannel(ADC0_CH15);     
+}
+
 uint32_t random(int min, int max)
 {
     uint32_t res= 0;    
     uint32_t length_of_range = 0;
     uint16_t adc_vaule = 0;
+    uint16_t seed = 0;
 
     length_of_range = max - min + 1;
 
     adc_vaule = ADC_ReadChannel(ADC0_CH15); 
-    srand(adc_vaule);
+    seed = rng();
+    srand(seed + adc_vaule);
+
     res = (uint32_t)(rand() % length_of_range + min);
 
     #if 1   // debug
-    printf("adc :0x%4X,rand :%5d(min :%5d,max :%5d)\r\n" ,adc_vaule , res , min , max);
+    printf("adc_vaule:0x%4X,res:%5d(min:%5d,max:%5d) [0x%4X/0x%4X/0x%4X/0x%4X/0x%4X]\r\n" ,
+            adc_vaule , res , min , max , 
+            za , zb ,zc , zx , seed);
     #endif
 
     return res;
@@ -270,6 +297,7 @@ uint32_t random(int min, int max)
 
 void loop(void)
 {
+    static uint16_t counter = 0;
     static uint16_t state = 0;
     uint16_t range_max = 0;
     if (is_flag_set(flag_generate_data))
@@ -295,7 +323,12 @@ void loop(void)
                 random(0 , range_max);
                 break;            
         }
-        state = (state == 4) ? (0) : (state + 1); 
+
+        if (counter++ >= 100)
+        {
+            counter = 0;
+            state = (state == 4) ? (0) : (state + 1); 
+        }        
     }
 }
 
@@ -477,7 +510,8 @@ int main()
     TIMER1_Init();
     // TIMER3_Init();
 
-	ADC_InitChannel(ADC0_CH15);    
+	ADC_InitChannel(ADC0_CH15); 
+    prepare_seed();   
 
     /* Got no where to go, just loop forever */
     while(1)
