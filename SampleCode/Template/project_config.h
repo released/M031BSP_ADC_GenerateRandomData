@@ -9,7 +9,6 @@ extern volatile uint32_t BitFlag;
 typedef enum{
 	flag_start = 0 ,
 
-	flag_ADC_Data_Ready ,
 	flag_generate_data ,
 
 	flag_error ,		

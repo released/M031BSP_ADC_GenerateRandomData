@@ -13,36 +13,18 @@
 volatile uint32_t BitFlag = 0;
 volatile uint32_t counter_tick = 0;
 
-enum
-{
-	ADC0_CH0 = 0 ,
-	ADC0_CH1 , 
-	
-	ADC0_CH2 , 
-	ADC0_CH3 , 
-	ADC0_CH4 , 
-	ADC0_CH5 , 
-	ADC0_CH6 , 
-	ADC0_CH7 , 
-	ADC0_CH8 , 
-	ADC0_CH9 , 
-	ADC0_CH10 , 
-	ADC0_CH11 , 
-	ADC0_CH12 ,
-	ADC0_CH13 , 
-	ADC0_CH14 , 
-	ADC0_CH15 , 
-	
-	ADC_CH_DEFAULT 	
-}ADC_CH_TypeDef;
-
 uint16_t za = 0;
 uint16_t zb = 0;
 uint16_t zc = 0;
 uint16_t zx = 0;
 
+#define SNUM        32       /* recorded number of lastest samples */
+uint32_t   adc_val[SNUM] = {0};
+uint32_t   val_sum = 0;
+int        oldest = 0;
+
 /*_____ M A C R O S ________________________________________________________*/
-#define ENABLE_ADC_IRQ
+
 
 /*_____ F U N C T I O N S __________________________________________________*/
 
@@ -133,7 +115,7 @@ void dump_buffer(uint8_t *pucBuff, int nBytes)
     printf("\r\n\r\n");
 }
 
-void  dump_buffer_hex(uint8_t *pucBuff, int nBytes)
+void dump_buffer_hex(uint8_t *pucBuff, int nBytes)
 {
     int     nIdx, i;
 
@@ -163,52 +145,106 @@ void delay_ms(uint32_t ms)
 	TIMER_Delay(TIMER0, 1000*ms);
 }
 
-// use ADC for random seed 
-void ADC_IRQHandler(void)
-{	
-//	printf("aADCxConvertedData : %d\r\n" , aADCxConvertedData);
-	set_flag(flag_ADC_Data_Ready , ENABLE);	
-    ADC_CLR_INT_FLAG(ADC, ADC_ADF_INT); /* Clear the A/D interrupt flag */
-}
-
-unsigned int ADC_ReadChannel(uint8_t ch)
+uint16_t get_adc_bg_val(void)
 {
+    uint16_t  val;    
+
     ADC_CLR_INT_FLAG(ADC, ADC_ADF_INT);    
-    #if defined (ENABLE_ADC_IRQ)
-    set_flag(flag_ADC_Data_Ready ,DISABLE);
-    ADC_ENABLE_INT(ADC, ADC_ADF_INT);
-    #endif
 
 	ADC_START_CONV(ADC);		
 
-    #if defined (ENABLE_ADC_IRQ)
-    while(!is_flag_set(flag_ADC_Data_Ready));	
-    ADC_DISABLE_INT(ADC, ADC_ADF_INT);
-    #else
-    __WFI();
     while (ADC_GET_INT_FLAG(ADC, ADC_ADF_INT)==0);
     ADC_CLR_INT_FLAG(ADC, ADC_ADF_INT);    
 
-    while(ADC_IS_DATA_VALID(ADC, ch) == 0);         
-    #endif
+    __WFI();
+    while(ADC_IS_DATA_VALID(ADC, 29) == 0);     
 
-	return (ADC_GET_CONVERSION_DATA(ADC, ch));
+    val = ADC_GET_CONVERSION_DATA(ADC, 29);
+
+    // printf("0X%4X:Band-gap voltage is %dmV if Reference voltage is 3.3V\n", val ,(3300*val)/4095);
+
+	return (val);
 }
 
-void ADC_InitChannel(uint8_t ch)
+int adc_trng_gen_bit(void)
 {
-    uint32_t ADCextendSampling = 0;
+    uint32_t   new_val, average;
+    int        ret_val;
 
-	set_flag(flag_ADC_Data_Ready , DISABLE);
+    new_val = get_adc_bg_val();
 
+    // average = (val_sum / SNUM);   /* sum divided by 32 */
+    average = (val_sum >> 5 );   /* sum divided by 32 */
+
+    if (average >= new_val)
+        ret_val = 1;
+    else
+        ret_val = 0;
+
+    // printf("%2d - sum = 0x%X (0x%X), avg = 0x%X, new = 0x%X\n", oldest, val_sum , val_sum >>5, average, new_val);
+
+    /* kick-off the oldest one and insert the new one */
+    val_sum -= adc_val[oldest];
+    val_sum += new_val;
+    adc_val[oldest] = new_val;
+    oldest = (oldest + 1) % SNUM;
+
+    return ret_val;
+}
+
+uint8_t adc_trng_gen_rnd_8(void)
+{
+    int       i;
+    uint8_t  val8;
+
+    val8 = 0;
+    for (i = 7; i >= 0; i--)
+        val8 |= (adc_trng_gen_bit() << i);
+
+    // printf("%2d - sum = 0x%X, val8 = 0x%X\n", oldest, val_sum, val8);
+
+    return val8;
+}
+
+uint16_t adc_trng_gen_rnd_16(void)
+{
+    int       i;
+    uint16_t  val16;
+
+    val16 = 0;
+    for (i = 15; i >= 0; i--)
+        val16 |= (adc_trng_gen_bit() << i);
+
+    // printf("%2d - sum = 0x%X, val16 = 0x%X\n", oldest, val_sum, val16);
+
+    return val16;
+}
+
+uint32_t adc_trng_gen_rnd_32(void)
+{
+    int       i;
+    uint32_t  val32;
+
+    val32 = 0;
+    for (i = 31; i >= 0; i--)
+        val32 |= (adc_trng_gen_bit() << i);
+
+    // printf("%2d - sum = 0x%X, val32 = 0x%X\n", oldest, val_sum, val32);
+
+    return val32;
+}
+
+void ADC_InitChannel(void)
+{
+    int i = 0;
     /* Enable ADC converter */
     ADC_POWER_ON(ADC);
 
     /*Wait for ADC internal power ready*/
     CLK_SysTickDelay(10000);
 
-    /* Set input mode as single-end, and Single mode*/
-    ADC_Open(ADC, ADC_ADCR_DIFFEN_SINGLE_END, ADC_ADCR_ADMD_SINGLE,(uint32_t) 0x1 << ch);
+    /* Set input mode as single-end, Single mode, and select channel 29 (band-gap voltage) */
+    ADC_Open(ADC, ADC_ADCR_DIFFEN_SINGLE_END, ADC_ADCR_ADMD_SINGLE_CYCLE, BIT29);
     
     /* To sample band-gap precisely, the ADC capacitor must be charged at least 3 us for charging the ADC capacitor ( Cin )*/
     /* Sampling time = extended sampling time + 1 */
@@ -225,32 +261,18 @@ void ADC_InitChannel(uint8_t ch)
 	*/
 
     /* Set extend sampling time based on external resistor value.*/
-    ADC_SetExtendSampleTime(ADC,(uint32_t) NULL, ADCextendSampling);
+    ADC_SetExtendSampleTime(ADC,(uint32_t) NULL, 71);
 
-    /* Select ADC input channel */
-    ADC_SET_INPUT_CHANNEL(ADC, 0x1 << ch);
+    val_sum = 0;
+    for (i = 0; i < SNUM; i++)
+    {
+        adc_val[i] = get_adc_bg_val();
+        // printf("int adc val = 0x%x\n", adc_val[i]);
+        val_sum += adc_val[i];
+    }
+    oldest = 0;
 
-	ADC_CLR_INT_FLAG(ADC, ADC_ADF_INT);
-    #if defined (ENABLE_ADC_IRQ)
-	ADC_ENABLE_INT(ADC, ADC_ADF_INT);
-	NVIC_EnableIRQ(ADC_IRQn);
-    #endif
-
-    /* Start ADC conversion */
-    ADC_START_CONV(ADC);
-
-    #if !defined (ENABLE_ADC_IRQ)
-    __WFI();
-    while(ADC_IS_DATA_VALID(ADC, ch) == 0);
-    #endif
-
-    #if defined (ENABLE_ADC_IRQ)
-	while(!is_flag_set(flag_ADC_Data_Ready));
-    #endif
-
-	#if 0	// debug
-	printf("%s : 0x%4X\r\n" , __FUNCTION__ , ADC_GET_CONVERSION_DATA(ADC, ch));
-	#endif
+    adc_trng_gen_rnd_16();    // drop the first 32-bits
 }
 
 // Fast 0-255 random number generator from http://eternityforest.com/Projects/rng.php:
@@ -265,10 +287,10 @@ uint16_t rng(void)//void uint8_t __attribute__((always_inline)) rng(void)
 
 void prepare_seed(void)
 {
-    za = ADC_ReadChannel(ADC0_CH15); 
-    zb = ADC_ReadChannel(ADC0_CH15); 
-    zc = ADC_ReadChannel(ADC0_CH15); 
-    zx = ADC_ReadChannel(ADC0_CH15);     
+    za = adc_trng_gen_rnd_16(); 
+    zb = adc_trng_gen_rnd_16();  
+    zc = adc_trng_gen_rnd_16();  
+    zx = adc_trng_gen_rnd_16();      
 }
 
 uint32_t random(int min, int max)
@@ -280,14 +302,14 @@ uint32_t random(int min, int max)
 
     length_of_range = max - min + 1;
 
-    adc_vaule = ADC_ReadChannel(ADC0_CH15); 
+    adc_vaule = adc_trng_gen_rnd_16();
     seed = rng();
     srand(seed + adc_vaule);
 
     res = (uint32_t)(rand() % length_of_range + min);
 
     #if 1   // debug
-    printf("adc_vaule:0x%4X,res:%5d(min:%5d,max:%5d) [0x%4X/0x%4X/0x%4X/0x%4X/0x%4X]\r\n" ,
+    printf("adc_vaule:0x%4X,range:%5d(min:%5d,max:%5d) [0x%4X/0x%4X/0x%4X/0x%4X/0x%4X]\r\n" ,
             adc_vaule , res , min , max , 
             za , zb ,zc , zx , seed);
     #endif
@@ -327,7 +349,11 @@ void loop(void)
         if (counter++ >= 100)
         {
             counter = 0;
-            state = (state == 4) ? (0) : (state + 1); 
+            state++;
+            if (state == 4)
+            {
+                state = 0;
+            }
         }        
     }
 }
@@ -477,15 +503,6 @@ void SYS_Init(void)
     SYS->GPB_MFPH = (SYS->GPB_MFPH & ~(SYS_GPB_MFPH_PB12MFP_Msk | SYS_GPB_MFPH_PB13MFP_Msk)) |
                     (SYS_GPB_MFPH_PB12MFP_UART0_RXD | SYS_GPB_MFPH_PB13MFP_UART0_TXD);
 
-    SYS->GPB_MFPH = (SYS->GPB_MFPH &~(SYS_GPB_MFPH_PB15MFP_Msk  )) \
-                    | (SYS_GPB_MFPH_PB15MFP_ADC_CH15 ) ;
-
-    /* Set PB.0 ~ PB.3 to input mode */
-    GPIO_SetMode(PB, BIT15, GPIO_MODE_INPUT);
-
-    /* Disable the PB0 ~ PB3 digital input path to avoid the leakage current. */
-    GPIO_DISABLE_DIGITAL_PATH(PB, BIT15);
-
    /* Update System Core Clock */
     SystemCoreClockUpdate();
 
@@ -510,7 +527,7 @@ int main()
     TIMER1_Init();
     // TIMER3_Init();
 
-	ADC_InitChannel(ADC0_CH15); 
+	ADC_InitChannel(); 
     prepare_seed();   
 
     /* Got no where to go, just loop forever */
